@@ -1,0 +1,291 @@
+// Ticket Booking System - Prisma Schema
+// This schema is designed to handle high-concurrency ticket booking scenarios
+// with proper locking mechanisms, audit trails, and idempotency guarantees.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// USER MANAGEMENT
+// ============================================================================
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String   // Hashed using bcryptjs
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  reservations Reservation[]
+  bookings     Booking[]
+  auditLogs    AuditLog[]
+
+  @@index([email])
+  @@map("users")
+}
+
+// ============================================================================
+// EVENT MANAGEMENT
+// ============================================================================
+
+enum EventCategory {
+  CONCERT
+  SPORTS
+  MOVIE
+  THEATER
+}
+
+enum EventStatus {
+  DRAFT      // Event created but not published
+  UPCOMING   // Published but sales not started
+  ON_SALE    // Currently accepting bookings
+  SOLD_OUT   // All seats booked
+  CANCELLED  // Event cancelled
+  COMPLETED  // Event has passed
+}
+
+model Event {
+  id          String        @id @default(uuid())
+  name        String
+  description String?       @db.Text
+  category    EventCategory
+
+  // Venue information
+  venueName    String
+  venueAddress String
+  venueCity    String
+
+  // Event timing
+  eventDate     DateTime // When the event takes place
+  doorsOpenAt   DateTime // When attendees can enter
+  saleStartTime DateTime // When ticket sales begin
+  saleEndTime   DateTime // When ticket sales end
+
+  // Seat availability (denormalized for performance)
+  // These fields are updated atomically when seats are booked/released
+  totalSeats     Int
+  availableSeats Int
+
+  // Event lifecycle
+  status    EventStatus @default(DRAFT)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  // Relations
+  seats        Seat[]
+  reservations Reservation[]
+  bookings     Booking[]
+
+  // Indexes for common query patterns
+  @@index([status, eventDate]) // Find upcoming ON_SALE events
+  @@index([venueCity, eventDate]) // Find events in a city
+  @@index([category, status]) // Filter by category and status
+  @@map("events")
+}
+
+// ============================================================================
+// SEAT MANAGEMENT
+// ============================================================================
+
+enum SeatType {
+  REGULAR
+  VIP
+  PREMIUM
+  ACCESSIBLE
+}
+
+enum SeatStatus {
+  AVAILABLE // Ready to be reserved
+  RESERVED  // Temporarily held during checkout (expires if not booked)
+  BOOKED    // Confirmed booking, payment successful
+  BLOCKED   // Manually blocked (damaged seat, etc.)
+}
+
+model Seat {
+  id         String     @id @default(uuid())
+  eventId    String
+  seatNumber String     // e.g., "A1", "B12"
+  row        String     // e.g., "A", "VIP-1"
+  section    String     // e.g., "Orchestra", "Balcony", "VIP"
+  seatType   SeatType
+  price      Decimal    @db.Decimal(10, 2)
+  status     SeatStatus @default(AVAILABLE)
+
+  // CRITICAL: Version field for optimistic locking
+  // This prevents race conditions when multiple users try to book the same seat
+  // Every update increments this. If version doesn't match during update, it means
+  // someone else modified the seat and we should retry or fail.
+  version Int @default(0)
+
+  // Temporary reservation tracking
+  // When a user adds seat to cart, we set reservedBy and reservedUntil
+  // This gives them time to complete payment before seat becomes available again
+  reservedBy    String?   // User ID who reserved it
+  reservedUntil DateTime? // When reservation expires
+
+  // Confirmed booking
+  bookingId String? // Links to the confirmed booking
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  event         Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  reservations  Reservation[]
+  bookingSeats  BookingSeat[]
+  booking       Booking?       @relation("SeatBooking", fields: [bookingId], references: [id])
+
+  // Constraints and indexes
+  @@unique([eventId, seatNumber]) // No duplicate seat numbers per event
+  @@index([eventId, status]) // Find available seats for an event
+  @@index([reservedUntil]) // Clean up expired reservations
+  @@map("seats")
+}
+
+// ============================================================================
+// RESERVATION MANAGEMENT (Temporary Holds)
+// ============================================================================
+
+enum ReservationStatus {
+  ACTIVE    // User is in checkout process
+  CONFIRMED // Successfully converted to booking
+  EXPIRED   // Reservation time elapsed
+  CANCELLED // User cancelled or chose different seats
+}
+
+model Reservation {
+  id        String            @id @default(uuid())
+  userId    String
+  eventId   String
+  seatId    String
+  status    ReservationStatus @default(ACTIVE)
+  expiresAt DateTime // Typically 10-15 minutes from creation
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  // Relations
+  user  User  @relation(fields: [userId], references: [id])
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  seat  Seat  @relation(fields: [seatId], references: [id], onDelete: Cascade)
+
+  // Indexes for cleanup jobs and queries
+  @@index([seatId]) // Find reservation for a seat
+  @@index([expiresAt, status]) // Clean up expired reservations
+  @@index([userId, status]) // User's active reservations
+  @@map("reservations")
+}
+
+// ============================================================================
+// BOOKING MANAGEMENT (Confirmed Purchases)
+// ============================================================================
+
+enum BookingStatus {
+  PENDING   // Created but payment not complete
+  CONFIRMED // Payment successful
+  CANCELLED // User cancelled
+  REFUNDED  // Refund processed
+  FAILED    // Payment failed
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+model Booking {
+  id               String        @id @default(uuid())
+  bookingReference String        @unique // Human-readable: "TKT-ABC123"
+  userId           String
+  eventId          String
+  totalAmount      Decimal       @db.Decimal(10, 2)
+  status           BookingStatus @default(PENDING)
+
+  // Payment integration (e.g., Stripe)
+  paymentIntentId String?
+  paymentStatus   PaymentStatus @default(PENDING)
+
+  // CRITICAL: Idempotency key prevents duplicate bookings
+  // If a user clicks "Book" multiple times or network retries occur,
+  // the same idempotencyKey ensures only ONE booking is created.
+  // This key should be generated client-side and sent with the request.
+  idempotencyKey String  @unique
+  metadata       Json?   // Additional payment/booking metadata
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  confirmedAt DateTime? // When payment was confirmed
+  cancelledAt DateTime? // When booking was cancelled
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id])
+  event        Event         @relation(fields: [eventId], references: [id])
+  bookingSeats BookingSeat[] // Junction table: one booking → many seats
+  seats        Seat[]        @relation("SeatBooking") // Direct relation for convenience
+
+  // Indexes
+  @@index([bookingReference]) // Quick lookup by reference
+  @@index([idempotencyKey]) // Prevent duplicates
+  @@index([userId, status]) // User's booking history
+  @@index([eventId, status]) // Event's bookings
+  @@map("bookings")
+}
+
+// ============================================================================
+// BOOKING-SEAT JUNCTION TABLE
+// ============================================================================
+
+// One booking can have multiple seats (e.g., buying 3 tickets at once)
+// This table creates the many-to-many relationship
+model BookingSeat {
+  id             String  @id @default(uuid())
+  bookingId      String
+  seatId         String
+  priceAtBooking Decimal @db.Decimal(10, 2) // Snapshot of price at purchase time
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  seat    Seat    @relation(fields: [seatId], references: [id], onDelete: Cascade)
+
+  // Constraints
+  @@unique([bookingId, seatId]) // Same seat can't be in booking twice
+  @@map("booking_seats")
+}
+
+// ============================================================================
+// AUDIT LOG (Debugging & Compliance)
+// ============================================================================
+
+// Tracks all important state changes for debugging race conditions,
+// compliance, and understanding system behavior under load
+model AuditLog {
+  id         String   @id @default(uuid())
+  entityType String   // "Seat", "Booking", "Reservation"
+  entityId   String   // ID of the entity
+  action     String   // "RESERVE", "BOOK", "CANCEL", "EXPIRE"
+  userId     String?  // Who performed the action (null for system actions)
+  oldValue   Json?    // Previous state snapshot
+  newValue   Json?    // New state snapshot
+  metadata   Json?    // Additional context (IP, user agent, etc.)
+  createdAt  DateTime @default(now())
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id])
+
+  // Indexes
+  @@index([entityType, entityId]) // Find all changes to an entity
+  @@index([createdAt]) // Time-based queries
+  @@map("audit_logs")
+}
