@@ -58,6 +58,10 @@ import {
   type LockOptions,
 } from '@/lib/locks';
 import {
+  scheduleReservationCleanup,
+  cancelReservationCleanup,
+} from '@/lib/queue';
+import {
   SeatLockError,
   SeatNotFoundError,
   SeatNotAvailableError,
@@ -304,10 +308,35 @@ export async function reserveSeats(
     const duration = Date.now() - startTime;
     console.log(`[DistributedBooking] ✅ User ${userId} reserved ${result.seats.length} seat(s) in ${duration}ms`);
 
+    // =========================================================================
+    // STEP 3: SCHEDULE CLEANUP JOBS
+    //
+    // Schedule background jobs to release these seats if the user doesn't
+    // complete the booking before expiration. Each reservation gets its
+    // own cleanup job so they can be cancelled individually.
+    // =========================================================================
+    for (let i = 0; i < result.reservationIds.length; i++) {
+      try {
+        await scheduleReservationCleanup({
+          reservationId: result.reservationIds[i],
+          seatId: seatIds[i],
+          eventId,
+          userId,
+          expiresAt: result.expiresAt.toISOString(),
+        });
+      } catch (error) {
+        // Log but don't fail - periodic cleanup will catch any missed ones
+        console.error(
+          `[DistributedBooking] Failed to schedule cleanup for reservation ${result.reservationIds[i]}:`,
+          error
+        );
+      }
+    }
+
     return result;
   } finally {
     // =========================================================================
-    // STEP 3: ALWAYS RELEASE LOCKS
+    // STEP 4: ALWAYS RELEASE LOCKS
     //
     // This runs regardless of success or failure.
     // Using atomic release ensures we don't release someone else's lock.
@@ -557,10 +586,29 @@ export async function confirmBooking(
     const duration = Date.now() - startTime;
     console.log(`[DistributedBooking] ✅ Booking confirmed: ${result.bookingReference} in ${duration}ms`);
 
+    // =========================================================================
+    // STEP 5: CANCEL SCHEDULED CLEANUP JOBS
+    //
+    // The reservations are now confirmed, so we don't need to release the
+    // seats. Cancel any pending cleanup jobs for these reservations.
+    // =========================================================================
+    for (const reservation of reservations) {
+      try {
+        await cancelReservationCleanup(reservation.id);
+      } catch (error) {
+        // Log but don't fail - the cleanup job will see the reservation
+        // is already CONFIRMED and skip processing anyway
+        console.error(
+          `[DistributedBooking] Failed to cancel cleanup for reservation ${reservation.id}:`,
+          error
+        );
+      }
+    }
+
     return result;
   } finally {
     // =========================================================================
-    // STEP 5: ALWAYS RELEASE LOCKS
+    // STEP 6: ALWAYS RELEASE LOCKS
     // =========================================================================
     console.log(`[DistributedBooking] 🔓 Releasing ${locks.length} locks`);
     await releaseMultipleLocks(locks);
