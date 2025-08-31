@@ -45,7 +45,7 @@ export class BookingError extends Error {
 
   constructor(message: string, code: string) {
     super(message);
-    this.name = 'BookingError';
+    this.name = "BookingError";
     this.code = code;
     // Maintains proper stack trace for where error was thrown (V8 engines)
     Error.captureStackTrace?.(this, this.constructor);
@@ -66,8 +66,8 @@ export class SeatLockError extends BookingError {
   readonly affectedKeys?: string[];
 
   constructor(message: string, affectedKeys?: string[]) {
-    super(message, 'SEAT_LOCK_ERROR');
-    this.name = 'SeatLockError';
+    super(message, "SEAT_LOCK_ERROR");
+    this.name = "SeatLockError";
     this.affectedKeys = affectedKeys;
   }
 }
@@ -89,8 +89,8 @@ export class SeatNotFoundError extends BookingError {
     const message = eventId
       ? `Seat ${seatId} not found for event ${eventId}`
       : `Seat ${seatId} not found`;
-    super(message, 'SEAT_NOT_FOUND');
-    this.name = 'SeatNotFoundError';
+    super(message, "SEAT_NOT_FOUND");
+    this.name = "SeatNotFoundError";
     this.seatId = seatId;
     this.eventId = eventId;
   }
@@ -113,9 +113,9 @@ export class SeatNotAvailableError extends BookingError {
   constructor(seatNumber: string, currentStatus: string) {
     super(
       `Seat ${seatNumber} is not available (current status: ${currentStatus})`,
-      'SEAT_NOT_AVAILABLE'
+      "SEAT_NOT_AVAILABLE"
     );
-    this.name = 'SeatNotAvailableError';
+    this.name = "SeatNotAvailableError";
     this.seatNumber = seatNumber;
     this.currentStatus = currentStatus;
   }
@@ -138,8 +138,8 @@ export class ReservationNotFoundError extends BookingError {
     const message = userId
       ? `Reservation ${reservationId} not found for user ${userId}`
       : `Reservation ${reservationId} not found`;
-    super(message, 'RESERVATION_NOT_FOUND');
-    this.name = 'ReservationNotFoundError';
+    super(message, "RESERVATION_NOT_FOUND");
+    this.name = "ReservationNotFoundError";
     this.reservationId = reservationId;
     this.userId = userId;
   }
@@ -161,9 +161,9 @@ export class ReservationExpiredError extends BookingError {
   constructor(reservationId: string, expiredAt: Date) {
     super(
       `Reservation ${reservationId} expired at ${expiredAt.toISOString()}`,
-      'RESERVATION_EXPIRED'
+      "RESERVATION_EXPIRED"
     );
-    this.name = 'ReservationExpiredError';
+    this.name = "ReservationExpiredError";
     this.reservationId = reservationId;
     this.expiredAt = expiredAt;
   }
@@ -180,8 +180,8 @@ export class ReservationExpiredError extends BookingError {
  */
 export class BookingConflictError extends BookingError {
   constructor(message: string) {
-    super(message, 'BOOKING_CONFLICT');
-    this.name = 'BookingConflictError';
+    super(message, "BOOKING_CONFLICT");
+    this.name = "BookingConflictError";
   }
 }
 
@@ -198,9 +198,66 @@ export class ValidationError extends BookingError {
   readonly field?: string;
 
   constructor(message: string, field?: string) {
-    super(message, 'VALIDATION_ERROR');
-    this.name = 'ValidationError';
+    super(message, "VALIDATION_ERROR");
+    this.name = "ValidationError";
     this.field = field;
+  }
+}
+
+/**
+ * Thrown when a requested booking does not exist.
+ *
+ * HTTP Status: 404 Not Found
+ *
+ * @example
+ * throw new BookingNotFoundError('booking-123');
+ */
+export class BookingNotFoundError extends BookingError {
+  readonly bookingId: string;
+
+  constructor(bookingId: string) {
+    super(`Booking ${bookingId} not found`, "BOOKING_NOT_FOUND");
+    this.name = "BookingNotFoundError";
+    this.bookingId = bookingId;
+  }
+}
+
+/**
+ * Thrown when a payment operation fails.
+ *
+ * HTTP Status: 402 Payment Required (for payment failures)
+ * HTTP Status: 400 Bad Request (for invalid payment operations)
+ *
+ * @example
+ * throw new PaymentError('Payment intent creation failed');
+ * throw new PaymentError('Refund failed: insufficient funds');
+ */
+export class PaymentError extends BookingError {
+  readonly stripeErrorCode?: string;
+
+  constructor(message: string, stripeErrorCode?: string) {
+    super(message, "PAYMENT_ERROR");
+    this.name = "PaymentError";
+    this.stripeErrorCode = stripeErrorCode;
+  }
+}
+
+/**
+ * Thrown when a booking fails after payment has been processed.
+ * This should trigger a compensating transaction (refund).
+ *
+ * HTTP Status: 500 Internal Server Error
+ *
+ * @example
+ * throw new BookingFailureException('Booking confirmation failed, payment refunded');
+ */
+export class BookingFailureException extends BookingError {
+  readonly wasRefunded: boolean;
+
+  constructor(message: string, wasRefunded: boolean = false) {
+    super(message, "BOOKING_FAILURE");
+    this.name = "BookingFailureException";
+    this.wasRefunded = wasRefunded;
   }
 }
 
@@ -225,6 +282,9 @@ export function getErrorStatusCode(error: unknown): number {
   if (error instanceof ReservationExpiredError) return 410;
   if (error instanceof BookingConflictError) return 409;
   if (error instanceof ValidationError) return 400;
+  if (error instanceof BookingNotFoundError) return 404;
+  if (error instanceof PaymentError) return 402;
+  if (error instanceof BookingFailureException) return 500;
   if (error instanceof BookingError) return 500;
   return 500;
 }
@@ -240,5 +300,5 @@ export function getErrorCode(error: unknown): string {
   if (error instanceof BookingError) {
     return error.code;
   }
-  return 'UNKNOWN_ERROR';
+  return "UNKNOWN_ERROR";
 }

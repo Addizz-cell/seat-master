@@ -67,7 +67,9 @@ import {
   SeatNotAvailableError,
   ReservationNotFoundError,
   ReservationExpiredError,
+  BookingFailureException,
 } from '@/lib/errors';
+import { refundPayment } from '@/services/paymentService';
 import { addMinutes } from 'date-fns';
 
 // ============================================================================
@@ -106,6 +108,7 @@ export interface BookingResult {
   bookingReference: string;
   totalAmount: string;
   status: string;
+  paymentStatus: string;
   seats: Array<{
     id: string;
     seatNumber: string;
@@ -114,6 +117,12 @@ export interface BookingResult {
     priceAtBooking: string;
   }>;
   createdAt: Date;
+}
+
+/** Options for confirmBooking */
+export interface ConfirmBookingOptions {
+  /** If true, creates booking with PENDING status awaiting payment (default: false) */
+  requirePayment?: boolean;
 }
 
 // ============================================================================
@@ -358,9 +367,15 @@ export async function reserveSeats(
  * 6. Creates audit log entries
  * 7. Releases all locks (always, even on error)
  *
+ * PAYMENT FLOW:
+ * - If options.requirePayment is true (default), creates booking with PENDING status
+ * - The booking will be CONFIRMED when payment webhook arrives
+ * - If options.requirePayment is false, creates booking with CONFIRMED status immediately
+ *
  * @param reservationIds - Array of reservation IDs to confirm
  * @param userId - The user confirming the booking
  * @param idempotencyKey - Unique key to prevent duplicate bookings
+ * @param options - Optional settings for booking behavior
  * @returns BookingResult with booking details
  *
  * @throws ReservationNotFoundError - If reservations don't exist or wrong user
@@ -370,8 +385,10 @@ export async function reserveSeats(
 export async function confirmBooking(
   reservationIds: string[],
   userId: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  options: ConfirmBookingOptions = {}
 ): Promise<BookingResult> {
+  const { requirePayment = true } = options;
   const startTime = Date.now();
   console.log(`[DistributedBooking] User ${userId} confirming ${reservationIds.length} reservation(s)`);
 
@@ -406,6 +423,7 @@ export async function confirmBooking(
       bookingReference: existingBooking.bookingReference,
       totalAmount: String(existingBooking.totalAmount),
       status: existingBooking.status,
+      paymentStatus: existingBooking.paymentStatus,
       seats: existingBooking.bookingSeats.map((bs) => ({
         id: bs.seat.id,
         seatNumber: bs.seat.seatNumber,
@@ -483,6 +501,12 @@ export async function confirmBooking(
       // Calculate total amount
       const totalAmount = reservations.reduce((sum, r) => sum + Number(r.seat.price), 0);
 
+      // Determine initial status based on payment requirement
+      // If payment is required, booking starts as PENDING and moves to CONFIRMED
+      // after successful payment via Stripe webhook
+      const initialStatus = requirePayment ? 'PENDING' : 'CONFIRMED';
+      const initialPaymentStatus = requirePayment ? 'PENDING' : 'CAPTURED';
+
       // Create the booking
       const bookingReference = generateBookingReference();
       const booking = await tx.booking.create({
@@ -491,10 +515,10 @@ export async function confirmBooking(
           userId,
           eventId,
           totalAmount,
-          status: 'CONFIRMED',
-          paymentStatus: 'CAPTURED',
+          status: initialStatus,
+          paymentStatus: initialPaymentStatus,
           idempotencyKey,
-          confirmedAt: new Date(),
+          confirmedAt: requirePayment ? null : new Date(),
           bookingSeats: {
             create: reservations.map((r) => ({
               seatId: r.seat.id,
@@ -572,6 +596,7 @@ export async function confirmBooking(
         bookingReference: booking.bookingReference,
         totalAmount: String(booking.totalAmount),
         status: booking.status,
+        paymentStatus: booking.paymentStatus,
         seats: booking.bookingSeats.map((bs) => ({
           id: bs.seat.id,
           seatNumber: bs.seat.seatNumber,
@@ -584,7 +609,7 @@ export async function confirmBooking(
     });
 
     const duration = Date.now() - startTime;
-    console.log(`[DistributedBooking] ✅ Booking confirmed: ${result.bookingReference} in ${duration}ms`);
+    console.log(`[DistributedBooking] ✅ Booking created: ${result.bookingReference} in ${duration}ms`);
 
     // =========================================================================
     // STEP 5: CANCEL SCHEDULED CLEANUP JOBS
@@ -726,4 +751,159 @@ export async function releaseExpiredReservations(): Promise<number> {
 
   console.log(`[DistributedBooking] Released ${released} expired reservation(s)`);
   return released;
+}
+
+// ============================================================================
+// COMPENSATING TRANSACTIONS
+// ============================================================================
+
+/**
+ * Handle booking failure after payment has been processed.
+ *
+ * This is a COMPENSATING TRANSACTION - it undoes the payment when the
+ * booking cannot be completed. This ensures we don't charge customers
+ * for bookings that failed.
+ *
+ * USE CASE:
+ * - Payment succeeds via Stripe
+ * - But booking confirmation fails (e.g., database error, seat already taken)
+ * - We need to refund the customer automatically
+ *
+ * @param bookingId - The booking that failed
+ * @param reservationIds - Reservations to release
+ * @param reason - Reason for failure (logged)
+ *
+ * @throws BookingFailureException - Always thrown after cleanup
+ */
+export async function handleBookingFailureWithRefund(
+  bookingId: string,
+  reservationIds: string[],
+  reason: string
+): Promise<never> {
+  console.log(`[DistributedBooking] ⚠️ Handling booking failure with refund for ${bookingId}`);
+  console.log(`[DistributedBooking] Reason: ${reason}`);
+
+  let wasRefunded = false;
+
+  try {
+    // =========================================================================
+    // STEP 1: Attempt to refund the payment
+    // =========================================================================
+    try {
+      const refundResult = await refundPayment(bookingId, reason);
+      wasRefunded = true;
+      console.log(`[DistributedBooking] ✅ Refund processed: ${refundResult.refundId}`);
+    } catch (refundError) {
+      // Log refund failure but continue with cleanup
+      // Manual intervention may be needed
+      console.error(`[DistributedBooking] ❌ Refund failed:`, refundError);
+    }
+
+    // =========================================================================
+    // STEP 2: Release the reservations
+    // =========================================================================
+    if (reservationIds.length > 0) {
+      // Get reservation details for lock keys
+      const reservations = await prisma.reservation.findMany({
+        where: { id: { in: reservationIds } },
+        include: {
+          seat: {
+            select: { id: true, eventId: true },
+          },
+        },
+      });
+
+      if (reservations.length > 0) {
+        const eventId = reservations[0].seat.eventId;
+        const seatIds = reservations.map((r) => r.seatId);
+        const lockKeys = seatLockKeys(eventId, seatIds);
+
+        const locks = await acquireMultipleLocks(lockKeys, {
+          ttlSeconds: 30,
+          retryCount: 3,
+          retryDelayMs: 100,
+        });
+
+        if (locks) {
+          try {
+            await prisma.$transaction(async (tx) => {
+              // Release seats back to AVAILABLE
+              await tx.seat.updateMany({
+                where: { id: { in: seatIds } },
+                data: {
+                  status: 'AVAILABLE',
+                  reservedBy: null,
+                  reservedUntil: null,
+                  bookingId: null,
+                  version: { increment: 1 },
+                },
+              });
+
+              // Mark reservations as CANCELLED
+              await tx.reservation.updateMany({
+                where: { id: { in: reservationIds } },
+                data: { status: 'CANCELLED' },
+              });
+
+              // Increment available seats count
+              await tx.event.update({
+                where: { id: eventId },
+                data: { availableSeats: { increment: seatIds.length } },
+              });
+            });
+
+            console.log(`[DistributedBooking] ✅ Released ${seatIds.length} seat(s)`);
+          } finally {
+            await releaseMultipleLocks(locks);
+          }
+        } else {
+          console.error(`[DistributedBooking] Could not acquire locks for cleanup`);
+        }
+      }
+    }
+
+    // =========================================================================
+    // STEP 3: Update booking status to FAILED
+    // =========================================================================
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        status: 'FAILED',
+        metadata: {
+          failureReason: reason,
+          refunded: wasRefunded,
+          failedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    // =========================================================================
+    // STEP 4: Create audit log
+    // =========================================================================
+    await prisma.auditLog.create({
+      data: {
+        entityType: 'Booking',
+        entityId: bookingId,
+        action: 'FAILURE_COMPENSATED',
+        newValue: {
+          status: 'FAILED',
+          reason,
+          refunded: wasRefunded,
+        },
+        metadata: {
+          reservationIds,
+        },
+      },
+    });
+  } catch (error) {
+    console.error(`[DistributedBooking] Error during failure compensation:`, error);
+  }
+
+  // Always throw to indicate the booking failed
+  throw new BookingFailureException(
+    wasRefunded
+      ? `Booking failed: ${reason}. Payment has been refunded.`
+      : `Booking failed: ${reason}. Please contact support for refund.`,
+    wasRefunded
+  );
 }

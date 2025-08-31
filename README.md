@@ -196,3 +196,66 @@ This project implements **three different approaches** to handle concurrent book
 - **Naive**: No locking, race conditions cause multiple "successful" bookings for the same seat
 - **Pessimistic**: PostgreSQL `SELECT FOR UPDATE` row locks, requests queue up (high latency)
 - **Distributed**: Redis locks, requests fail fast (low latency), works across multiple servers
+
+## Payment Integration (Stripe)
+
+The booking system includes full Stripe payment integration with webhook handling.
+
+### Payment Flow
+
+```
+1. User reserves seats → Booking created with status PENDING
+2. Client calls POST /api/bookings/:id/payment → Creates PaymentIntent
+3. Client uses Stripe.js to collect card and confirm payment
+4. Stripe webhook notifies server → Booking updated to CONFIRMED
+```
+
+### Testing Payments
+
+1. **Install Stripe CLI**:
+   ```bash
+   # macOS
+   brew install stripe/stripe-cli/stripe
+
+   # Windows (scoop)
+   scoop install stripe
+
+   # Or download from https://stripe.com/docs/stripe-cli
+   ```
+
+2. **Login and forward webhooks**:
+   ```bash
+   stripe login
+   stripe listen --forward-to localhost:3000/api/webhooks/stripe
+   ```
+
+3. **Copy the webhook signing secret** (whsec_...) to `.env.local`:
+   ```
+   STRIPE_WEBHOOK_SECRET=whsec_...
+   ```
+
+4. **Test cards**:
+   | Scenario | Card Number |
+   |----------|-------------|
+   | Success | `4242 4242 4242 4242` |
+   | Decline | `4000 0000 0000 0002` |
+   | Requires authentication | `4000 0025 0000 3155` |
+   | Insufficient funds | `4000 0000 0000 9995` |
+
+5. **Use any future expiry date** (e.g., 12/34) and any 3-digit CVC
+
+### Payment API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/bookings/:id/payment` | POST | Create payment intent for a booking |
+| `/api/webhooks/stripe` | POST | Stripe webhook handler |
+
+### Compensating Transactions
+
+If a booking fails after payment succeeds:
+- The system automatically refunds the payment
+- Seats are released back to available
+- Booking is marked as FAILED with refund details
+
+This ensures customers are never charged for failed bookings
