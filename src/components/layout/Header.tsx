@@ -9,7 +9,6 @@ import {
   Music,
   Trophy,
   Theater,
-  User,
   LogOut,
   Settings,
   Ticket as TicketIcon,
@@ -42,6 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { useAuth } from "@/hooks/useAuth";
 
 const categories = [
   {
@@ -69,8 +69,8 @@ export function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const pathname = usePathname();
 
-  // Simulated auth state - in production, this would come from your auth provider
-  const [user, setUser] = useState<{ name: string; email: string } | null>(null);
+  // Real auth state from useAuth hook
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -179,9 +179,9 @@ export function Header() {
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
-                  <Link href="/my-tickets" className="cursor-pointer">
+                  <Link href="/bookings" className="cursor-pointer">
                     <TicketIcon className="mr-2 h-4 w-4" />
-                    My Tickets
+                    My Bookings
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
@@ -193,7 +193,7 @@ export function Header() {
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="cursor-pointer text-destructive focus:text-destructive"
-                  onClick={() => setUser(null)}
+                  onClick={() => logout()}
                 >
                   <LogOut className="mr-2 h-4 w-4" />
                   Log out
@@ -206,7 +206,7 @@ export function Header() {
                 <Link href="/login">Log in</Link>
               </Button>
               <Button asChild>
-                <Link href="/signup">Sign up</Link>
+                <Link href="/register">Sign up</Link>
               </Button>
             </div>
           )}
@@ -272,12 +272,12 @@ export function Header() {
                     </div>
                   </div>
                   <Link
-                    href="/my-tickets"
+                    href="/bookings"
                     className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-accent"
                     onClick={() => setIsMobileMenuOpen(false)}
                   >
                     <TicketIcon className="h-4 w-4" />
-                    My Tickets
+                    My Bookings
                   </Link>
                   <Link
                     href="/settings"
@@ -290,7 +290,7 @@ export function Header() {
                   <button
                     className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10"
                     onClick={() => {
-                      setUser(null);
+                      logout();
                       setIsMobileMenuOpen(false);
                     }}
                   >
@@ -306,7 +306,7 @@ export function Header() {
                     </Link>
                   </Button>
                   <Button asChild className="w-full">
-                    <Link href="/signup" onClick={() => setIsMobileMenuOpen(false)}>
+                    <Link href="/register" onClick={() => setIsMobileMenuOpen(false)}>
                       Sign up
                     </Link>
                   </Button>
