@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { searchEventsSchema, createEventSchema, safeValidate } from '@/validations/schemas';
 import type { ApiResponse, EventListItem, PaginatedResponse } from '@/types';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../../../../generated/prisma/client';
 
 /**
  * GET /api/events
