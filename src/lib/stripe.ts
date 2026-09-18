@@ -24,6 +24,10 @@
 
 import Stripe from 'stripe';
 
+// Use a placeholder only so importing this module does not fail during a Vercel build.
+// Real payment requests still require STRIPE_SECRET_KEY to be configured.
+const stripeSecretKey = process.env.STRIPE_SECRET_KEY ?? 'sk_test_placeholder';
+
 /**
  * Stripe client instance configured with:
  * - API version set for consistency
