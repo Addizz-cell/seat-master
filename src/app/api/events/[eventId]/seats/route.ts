@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { uuidSchema, safeValidate } from '@/validations/schemas';
 import type { ApiResponse, SeatMapData, SeatMapSection, SeatMapRow, SeatMapSeat } from '@/types';
-import { SeatStatus } from '@prisma/client';
+import { SeatStatus } from '../../../../../../generated/prisma/client';
 
 interface RouteParams {
   params: Promise<{ eventId: string }>;
