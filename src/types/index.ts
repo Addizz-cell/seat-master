@@ -15,7 +15,7 @@ import type {
   SeatStatus,
   BookingStatus,
   PaymentStatus,
-} from '@prisma/client';
+} from '../generated/prisma/client'
 
 /**
  * Decimal type from Prisma for monetary values.
@@ -427,4 +427,4 @@ export type {
   SeatStatus,
   BookingStatus,
   PaymentStatus,
-} from '@prisma/client';
+} from '../generated/prisma/client'
