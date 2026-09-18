@@ -9,7 +9,12 @@
  * Run with: npx prisma db seed
  */
 
-import { PrismaClient, EventCategory, EventStatus, SeatType } from '@prisma/client';
+import {
+  PrismaClient,
+  EventCategory,
+  EventStatus,
+  SeatType
+} from '../src/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import bcrypt from 'bcryptjs';
