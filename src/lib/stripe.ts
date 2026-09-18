@@ -24,17 +24,12 @@
 
 import Stripe from 'stripe';
 
-// Validate required environment variable
-if (!process.env.STRIPE_SECRET_KEY) {
-  throw new Error('STRIPE_SECRET_KEY environment variable is required');
-}
-
 /**
  * Stripe client instance configured with:
  * - API version set for consistency
  * - TypeScript types enabled
  */
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+const stripe = new Stripe(stripeSecretKey, {
   apiVersion: '2025-12-15.clover', // Use latest stable API version
   typescript: true,
 });
