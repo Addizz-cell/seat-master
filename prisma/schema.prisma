@@ -3,7 +3,8 @@
 // with proper locking mechanisms, audit trails, and idempotency guarantees.
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
