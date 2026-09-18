@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, Mail, Lock, User, Ticket } from "lucide-react";
@@ -18,7 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("redirect") || "/events";
@@ -225,5 +225,14 @@ export default function RegisterPage() {
         </form>
       </Card>
     </div>
+  );
+}
+
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className="min-h-[calc(100vh-4rem)]" />}>
+      <RegisterForm />
+    </Suspense>
   );
 }
