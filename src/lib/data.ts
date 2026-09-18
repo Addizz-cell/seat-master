@@ -5,8 +5,8 @@
 
 import prisma from "@/lib/db";
 import type { EventListItem, EventCategory, PaginatedResponse } from "@/types";
-import type { Event } from "@prisma/client";
-import { Prisma } from "@prisma/client";
+import type { Event } from "../generated/prisma/client";
+import { Prisma } from "../generated/prisma/client";
 
 // ============================================================================
 // TYPES
